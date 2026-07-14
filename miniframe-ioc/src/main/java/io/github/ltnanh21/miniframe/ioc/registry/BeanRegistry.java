@@ -5,4 +5,5 @@ public interface BeanRegistry {
 
     Object get(String beanName);
 
+    boolean contains(String beanName);
 }
