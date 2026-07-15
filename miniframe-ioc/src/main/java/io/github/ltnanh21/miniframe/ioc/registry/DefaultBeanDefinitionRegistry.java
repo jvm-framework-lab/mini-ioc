@@ -13,7 +13,7 @@ public class DefaultBeanDefinitionRegistry implements BeanDefinitionRegistry {
     @Override
     public void register(String beanName, BeanDefinition beanDefinition) {
         if (beanDefinitionMap.containsKey(beanName)) {
-            throw new NoUniqueBeanDefinitionException();
+            throw new NoUniqueBeanDefinitionException("Bean name '" + beanName + "' is already registered");
         }
 
         beanDefinitionMap.put(beanName, beanDefinition);
@@ -22,13 +22,14 @@ public class DefaultBeanDefinitionRegistry implements BeanDefinitionRegistry {
     @Override
     public BeanDefinition get(String beanName) {
         if (!beanDefinitionMap.containsKey(beanName)) {
-            throw new BeanDefinitionNotFoundException();
+            throw new BeanDefinitionNotFoundException("Bean name '" + beanName + "' is not registered");
         }
 
         return beanDefinitionMap.get(beanName);
     }
 
-    private boolean containsBeanDefinition(String beanName) {
+    @Override
+    public boolean contains(String beanName) {
         return beanDefinitionMap.containsKey(beanName);
     }
 }

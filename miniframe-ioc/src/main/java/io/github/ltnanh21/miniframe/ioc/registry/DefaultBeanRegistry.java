@@ -12,7 +12,7 @@ public class DefaultBeanRegistry implements BeanRegistry {
     @Override
     public void register(String beanName, Object object) {
         if (beans.containsKey(beanName)) {
-            throw new BeanAlreadyExistsException();
+            throw new BeanAlreadyExistsException(beanName);
         }
 
         beans.put(beanName, object);
@@ -21,13 +21,14 @@ public class DefaultBeanRegistry implements BeanRegistry {
     @Override
     public Object get(String beanName) {
         if (!beans.containsKey(beanName)) {
-            throw new BeanNotFoundException();
+            throw new BeanNotFoundException("Cannot find bean " + beanName);
         }
 
         return beans.get(beanName);
     }
 
-    private boolean contains(String beanName) {
+    @Override
+    public boolean contains(String beanName) {
         return beans.containsKey(beanName);
     }
 }

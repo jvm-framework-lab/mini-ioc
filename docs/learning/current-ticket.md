@@ -1,185 +1,359 @@
-# IOC-004 — Implement Basic DefaultBeanFactory
+# IOC-004 — Implement Basic Name-Based Singleton BeanFactory
 
 ## Status
 
-`PLANNED`
+`CHANGES_REQUESTED`
+
+## Review Context
+
+- Repository: `jvm-framework-lab/mini-ioc`
+- Pull Request: `#2`
+- Branch: `feature/IOC-004-basic-bean-factory`
+- Requested latest commit: `85d3229c388d4773c69f0686d2d514af3e236d3c`
+- Review scope: basic name-based singleton bean retrieval
+- Final merge condition: all acceptance criteria checked and `mvn clean test` passes
+
+> This ticket deliberately excludes type-based lookup and dependency injection.
+> IOC-004 should establish one complete, tested bean retrieval flow before new abstractions are introduced.
+
+---
 
 ## Context
 
-The project already defines:
+The project already provides:
 
-- bean metadata through `BeanDefinition`;
-- a `BeanDefinitionRegistry` for metadata;
-- a `BeanRegistry` for instantiated objects;
-- a `BeanFactory` contract with lookup by name and type;
-- a `DefaultBeanFactory` skeleton whose methods currently return `null`.
+- `BeanDefinition` for bean metadata;
+- `BeanDefinitionRegistry` for metadata storage;
+- `BeanRegistry` for instantiated bean storage;
+- `BeanFactory` as the public bean retrieval API;
+- `DefaultBeanFactory` as the default implementation.
 
-This ticket connects the existing abstractions into the first working retrieval flow.
+IOC-004 connects these components into the first working IoC-container workflow.
+
+The core behavior is:
+
+```text
+getBean(beanName)
+    ↓
+validate beanName
+    ↓
+check BeanRegistry
+    ├── found     → return existing singleton
+    └── not found
+            ↓
+      get BeanDefinition
+            ↓
+      instantiate by no-argument constructor
+            ↓
+      register singleton
+            ↓
+      return managed instance
+```
+
+---
 
 ## Goal
 
-Implement the minimum useful behavior of `DefaultBeanFactory` so that it can retrieve already-created beans and create simple singleton beans from registered `BeanDefinition` metadata.
+Implement a minimal but complete `DefaultBeanFactory` that can:
 
-The objective is to understand the coordination role of a bean factory without introducing constructor dependency injection yet.
+1. retrieve an existing singleton by bean name;
+2. create a missing bean from its registered `BeanDefinition`;
+3. cache the created instance in `BeanRegistry`;
+4. return the same managed instance for subsequent lookups;
+5. expose IoC-specific failures instead of reflection implementation details.
+
+---
 
 ## Functional Requirements
 
-### 1. Factory dependencies
+### 1. Collaborator wiring
 
-`DefaultBeanFactory` must work with:
+`DefaultBeanFactory` must receive these collaborators from outside:
 
-- one `BeanDefinitionRegistry`;
-- one `BeanRegistry`.
+- `BeanDefinitionRegistry`
+- `BeanRegistry`
 
-These collaborators should be supplied to the factory rather than created invisibly inside lookup methods.
+The factory must not silently create private registry instances that registration code cannot access.
 
-### 2. Lookup by bean name
-
-Implement:
+Example target shape:
 
 ```java
-Object getBean(String name)
+public DefaultBeanFactory(
+        BeanRegistry beanRegistry,
+        BeanDefinitionRegistry beanDefinitionRegistry
+) {
+    this.beanRegistry = beanRegistry;
+    this.beanDefinitionRegistry = beanDefinitionRegistry;
+}
 ```
 
-Expected flow:
+---
 
-1. Validate the requested bean name.
-2. Check `BeanRegistry`.
-3. Return the existing instance when found.
-4. Otherwise, obtain its `BeanDefinition`.
-5. Create the bean using a no-argument constructor.
-6. Register the created instance in `BeanRegistry`.
-7. Return the created instance.
+### 2. Lookup by explicit bean name
 
-### 3. Lookup by required type
-
-Implement:
+The public API for this ticket is:
 
 ```java
-<T> T getBean(Class<T> requiredType)
+Object getBean(String beanName);
 ```
 
-Expected behavior:
+Required behavior:
 
-1. Validate `requiredType`.
-2. Find matching bean definitions by type.
-3. If exactly one definition matches, resolve it through the name-based flow.
-4. Return the result cast to the required type.
-5. Fail explicitly when no candidate exists.
-6. Fail explicitly when multiple candidates exist.
+1. reject invalid input;
+2. return an existing registered singleton;
+3. retrieve the matching `BeanDefinition` when no instance exists;
+4. create the bean;
+5. register the created singleton;
+6. return it.
 
-Do not silently choose the first matching definition.
+The public API must not return `null` for unresolved beans.
+
+---
+
+### 3. Bean creation
+
+IOC-004 supports only a no-argument constructor.
+
+Expected reflection flow:
+
+```java
+beanClass.getDeclaredConstructor().newInstance();
+```
+
+Do not select a constructor through:
+
+```java
+getDeclaredConstructors()[0]
+```
+
+Constructor selection and constructor injection belong to later tickets.
+
+---
 
 ### 4. Singleton behavior
 
-For this ticket, every created bean is treated as a singleton:
+Every bean is treated as a singleton in this ticket.
 
-- the first lookup creates the instance;
-- later lookups return the same object reference;
-- creation must not happen again after registration.
+Required behavior:
 
-`Scope.PROTOTYPE` behavior is intentionally excluded from this ticket even if the enum already exists.
+- the first lookup creates the object;
+- the object is registered once;
+- later lookups return the same object reference.
 
-### 5. Failure behavior
+The primary assertion is:
 
-Do not return `null` for failed bean resolution.
+```java
+assertSame(firstLookup, secondLookup);
+```
 
-Use existing domain exceptions where suitable. Add a minimal IoC-specific exception only when the current exception package does not already provide an appropriate type.
+---
 
-Failure messages should identify at least:
+### 5. Bean-name validation
 
-- requested bean name or required type;
-- the operation that failed;
-- the underlying cause when reflection fails.
+The factory must reject:
+
+```text
+null
+""
+"   "
+```
+
+A suitable failure for invalid caller input is `IllegalArgumentException`, with a meaningful message.
+
+Example:
+
+```java
+if (beanName == null || beanName.isBlank()) {
+    throw new IllegalArgumentException(
+            "Bean name must not be null or blank"
+    );
+}
+```
+
+---
+
+### 6. Exception boundary
+
+`BeanFactory` must not expose reflection-specific checked exceptions such as:
+
+- `NoSuchMethodException`
+- `InvocationTargetException`
+- `InstantiationException`
+- `IllegalAccessException`
+
+The interface should remain:
+
+```java
+Object getBean(String beanName);
+```
+
+Reflection failures must be wrapped in an IoC-domain exception such as:
+
+```java
+BeanCreationException
+```
+
+The exception must preserve:
+
+- bean name;
+- bean class;
+- original root cause.
+
+Example message:
+
+```text
+Failed to create bean 'userService' of type com.example.UserService
+```
+
+Missing definitions must produce a meaningful lookup exception, not a silent `null`.
+
+---
 
 ## Technical Constraints
 
-- Do not implement constructor dependency injection.
-- Do not select constructors with parameters.
-- Do not implement annotation scanning.
-- Do not implement bean lifecycle callbacks.
-- Do not implement lazy/eager startup processing.
-- Do not implement circular-dependency handling.
-- Do not redesign all existing registries in the same ticket unless a blocking issue is demonstrated.
-- Do not catch exceptions and replace them with an uninformative generic message.
-- Do not expose mutable internal registry maps.
+Do not implement the following in IOC-004:
 
-## Required Tests
-
-Replace or supplement the generated `AppTest` with focused unit tests.
-
-At minimum, cover:
-
-1. Existing bean is returned from `BeanRegistry`.
-2. Missing instance is created from its `BeanDefinition`.
-3. The created bean is registered.
-4. Two lookups by name return the same instance.
-5. Lookup by type returns the registered bean.
-6. Missing name throws an explicit exception.
-7. Missing type throws an explicit exception.
-8. Multiple beans matching one type throw an explicit exception.
-9. Bean without an accessible no-argument constructor fails with a meaningful exception.
-10. Null or blank lookup input is rejected.
-
-## Acceptance Criteria
-
-- [ ] `DefaultBeanFactory` receives both registries as collaborators.
-- [ ] `getBean(String)` returns an existing registered instance.
-- [ ] `getBean(String)` creates a missing instance from `BeanDefinition`.
-- [ ] A newly created instance is stored in `BeanRegistry`.
-- [ ] Repeated lookup returns the same singleton instance.
-- [ ] `getBean(Class<T>)` resolves exactly one matching bean.
-- [ ] Missing beans never result in a silent `null`.
-- [ ] Ambiguous type lookup is rejected.
-- [ ] Reflection failures preserve the original cause.
-- [ ] The required behavior is covered by unit tests.
-- [ ] `mvn test` passes.
-
-## Suggested Implementation Order
-
-1. Inspect registry APIs and identify missing operations needed by the factory.
-2. Add tests for returning an existing bean.
-3. Implement name-based lookup from `BeanRegistry`.
-4. Add tests for creating a no-argument bean.
-5. Implement metadata lookup and reflective instantiation.
-6. Register created singleton instances.
-7. Add type-based lookup tests.
-8. Implement type-based candidate resolution.
-9. Add negative and ambiguity tests.
-10. Refactor only after all behavior is covered.
-
-## Definition of Done
-
-The ticket is done when:
-
-- all acceptance criteria are checked;
-- all tests pass;
-- the PR contains no unrelated feature;
-- review findings marked as blocking are addressed;
-- the final review status is `APPROVED`.
-
-## Out of Scope
-
-The following belong to later tickets:
-
-- constructor selection;
-- recursive dependency resolution;
+- `getBean(Class<T>)`
+- lookup by type;
+- multiple-candidate resolution;
+- `BeanCreator` abstraction;
+- `ConstructorResolver`;
+- `DependencyResolver`;
 - constructor injection;
 - prototype scope;
 - circular-dependency detection;
-- annotation scanning;
-- bean post-processors;
-- lifecycle callbacks;
-- eager initialization;
-- application context.
+- bean lifecycle callbacks;
+- `BeanPostProcessor`;
+- component scanning;
+- annotation processing;
+- `ApplicationContext`.
 
-## Expected Lesson Learned
+Unused future abstractions should not participate in the IOC-004 execution flow.
 
-After completing this ticket, you should be able to explain:
+---
 
-1. Why `BeanFactory` does more than call `new`.
-2. The difference between bean metadata and a bean instance.
-3. Why the factory coordinates registries instead of replacing them.
-4. Why singleton caching belongs to instance management.
-5. Why returning `null` from a container API hides configuration errors.
-6. Why type-based lookup must handle ambiguity explicitly.
+## Required Tests
+
+Create focused tests for `DefaultBeanFactory`.
+
+Recommended file:
+
+```text
+src/test/java/.../factory/DefaultBeanFactoryTest.java
+```
+
+Required test cases:
+
+1. `shouldReturnExistingBeanFromRegistry`
+2. `shouldCreateBeanFromDefinition`
+3. `shouldRegisterCreatedBean`
+4. `shouldReturnSameSingletonOnRepeatedLookup`
+5. `shouldThrowWhenBeanDefinitionDoesNotExist`
+6. `shouldRejectNullBeanName`
+7. `shouldRejectBlankBeanName`
+8. `shouldWrapCreationFailureWhenDefaultConstructorDoesNotExist`
+
+A generated test such as `assertTrue(true)` does not count as ticket coverage.
+
+---
+
+## Acceptance Criteria
+
+### Factory design
+
+- [x] `DefaultBeanFactory` coordinates `BeanRegistry` and `BeanDefinitionRegistry`.
+- [x] Registry collaborators are supplied through the constructor.
+- [ ] `DefaultBeanFactory` contains no unused dependency-resolution field or flow.
+- [ ] The public `BeanFactory` API exposes no reflection-specific checked exceptions.
+
+### Lookup behavior
+
+- [x] Lookup is supported by explicit bean name.
+- [x] An existing singleton is returned from `BeanRegistry`.
+- [x] A missing instance is created from its `BeanDefinition`.
+- [x] A created bean is registered in `BeanRegistry`.
+- [ ] Repeated lookup is verified to return the same object reference.
+- [ ] Missing bean definitions fail with a meaningful exception.
+- [ ] Lookup never silently returns `null`.
+
+### Input and failure handling
+
+- [ ] Null bean names are rejected.
+- [ ] Empty bean names are rejected.
+- [ ] Blank bean names are rejected.
+- [ ] Bean-creation failures are wrapped in `BeanCreationException`.
+- [ ] `BeanCreationException` preserves the original cause.
+- [ ] Exception messages include useful bean context.
+
+### Testing and verification
+
+- [ ] `DefaultBeanFactory` behavior is covered by focused unit tests.
+- [ ] Positive singleton paths are covered.
+- [ ] Negative and reflection-failure paths are covered.
+- [ ] `mvn clean test` passes.
+- [ ] No generated build output is committed.
+
+---
+
+## Suggested Completion Order
+
+1. Remove unused or future-ticket logic from `DefaultBeanFactory`.
+2. Ensure `BeanFactory#getBean(String)` exposes no checked reflection exceptions.
+3. Add bean-name validation.
+4. Implement meaningful `BeanNotFoundException` behavior.
+5. Implement `BeanCreationException` with message and cause.
+6. Wrap reflection failures inside `DefaultBeanFactory`.
+7. Add behavior-focused unit tests.
+8. Run `mvn clean test`.
+9. Check the completed acceptance criteria.
+10. Request final review before merge.
+
+---
+
+## Definition of Done
+
+IOC-004 is complete only when:
+
+- all required behavior is implemented;
+- all acceptance criteria are checked;
+- the factory API hides reflection internals;
+- no constructor injection or dependency-resolution behavior is included;
+- all unit tests pass;
+- the Pull Request description accurately reflects the code;
+- final review status is `APPROVED`.
+
+---
+
+## Expected Learning Outcomes
+
+After IOC-004, the developer should be able to explain:
+
+1. Why `BeanDefinitionRegistry` and `BeanRegistry` store different things.
+2. Why `BeanFactory` coordinates the flow instead of replacing the registries.
+3. Why a managed singleton must be cached after creation.
+4. Why framework APIs should hide raw reflection exceptions.
+5. Why returning `null` hides container configuration errors.
+6. Why dependency resolution should be introduced only after basic retrieval is stable.
+
+---
+
+## Review Result
+
+Current result:
+
+```text
+CHANGES_REQUESTED
+```
+
+The core orchestration direction is correct. Before merge, the ticket still requires verified input validation, domain exception handling, removal of reflection exceptions from the public API, and focused unit tests.
+
+---
+
+## Next Review Input
+
+For final review, provide:
+
+- the latest commit hash;
+- output of `mvn clean test`;
+- updated PR acceptance-criteria checkboxes;
+- source archive or patch if GitHub does not expose the latest commit contents.
