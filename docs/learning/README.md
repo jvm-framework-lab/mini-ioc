@@ -83,12 +83,13 @@ Each ticket uses one of these statuses:
 
 ## Progress
 
-| Ticket | Topic | Status | Review |
-|---|---|---:|---|
-| IOC-001 | Define bean metadata | COMPLETED | Baseline history |
-| IOC-002 | Define bean-definition registry | COMPLETED | Baseline history |
-| IOC-003 | Define bean-instance registry | COMPLETED | Baseline history |
-| IOC-004 | Implement basic `DefaultBeanFactory` | PLANNED | Pending |
+| Ticket  | Topic                                  |      Status | Review                                          |
+|---------|----------------------------------------|------------:|-------------------------------------------------|
+| IOC-001 | Define bean metadata                   |   COMPLETED | Baseline history                                |
+| IOC-002 | BeanDefinitionRegistry                 |   COMPLETED | Baseline history                                |
+| IOC-003 | BeanRegistry                           |   COMPLETED | Baseline history                                |
+| IOC-004 | Basic name-based singleton BeanFactory |   COMPLETED | [Review](reviews/IOC-004-basic-bean-factory.md) |
+| IOC-005 | Extract bean creation responsibility   | IN_PROGRESS | Pending                                         |
 
 The first three rows represent the foundation already present on `main`. They can be adjusted later when the commit history is formally documented.
 

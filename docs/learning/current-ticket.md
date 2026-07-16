@@ -1,36 +1,112 @@
-# IOC-004 — Implement Basic Name-Based Singleton BeanFactory
+# IOC-005 — Extract Bean Creation Responsibility
 
 ## Status
 
-`CHANGES_REQUESTED`
-
-## Review Context
-
-- Repository: `jvm-framework-lab/mini-ioc`
-- Pull Request: `#2`
-- Branch: `feature/IOC-004-basic-bean-factory`
-- Requested latest commit: `85d3229c388d4773c69f0686d2d514af3e236d3c`
-- Review scope: basic name-based singleton bean retrieval
-- Final merge condition: all acceptance criteria checked and `mvn clean test` passes
-
-> This ticket deliberately excludes type-based lookup and dependency injection.
-> IOC-004 should establish one complete, tested bean retrieval flow before new abstractions are introduced.
+`PLANNED`
 
 ---
 
 ## Context
 
-The project already provides:
+After IOC-004, `DefaultBeanFactory` can:
 
-- `BeanDefinition` for bean metadata;
-- `BeanDefinitionRegistry` for metadata storage;
-- `BeanRegistry` for instantiated bean storage;
-- `BeanFactory` as the public bean retrieval API;
-- `DefaultBeanFactory` as the default implementation.
+- retrieve an existing singleton by bean name;
+- obtain a `BeanDefinition`;
+- create a bean through its no-argument constructor;
+- register the created singleton;
+- return the managed instance.
 
-IOC-004 connects these components into the first working IoC-container workflow.
+The current implementation performs reflection directly inside `DefaultBeanFactory`.
 
-The core behavior is:
+Example responsibility currently owned by the factory:
+
+```java
+beanDefinition.getBeanClass()
+        .getDeclaredConstructor()
+        .newInstance();
+```
+
+This works, but bean creation is a separate responsibility from bean lookup and singleton orchestration.
+
+---
+
+## Goal
+
+Extract reflection-based bean instantiation from `DefaultBeanFactory` into a dedicated `BeanCreator` abstraction.
+
+After this ticket:
+
+```text
+DefaultBeanFactory
+    → coordinates lookup and singleton caching
+
+BeanCreator
+    → creates an object from BeanDefinition metadata
+```
+
+This ticket must preserve all behavior implemented in IOC-004.
+
+---
+
+## Proposed Design
+
+### BeanCreator
+
+Create:
+
+```java
+public interface BeanCreator {
+
+    Object createBean(
+            String beanName,
+            BeanDefinition beanDefinition
+    );
+}
+```
+
+### ReflectionBeanCreator
+
+Create:
+
+```java
+public class ReflectionBeanCreator implements BeanCreator {
+}
+```
+
+`ReflectionBeanCreator` is responsible for:
+
+- reading the bean class from `BeanDefinition`;
+- obtaining its no-argument constructor;
+- invoking the constructor;
+- wrapping reflection failures in `BeanCreationException`;
+- preserving the original root cause;
+- including bean name and bean type in the exception message.
+
+---
+
+## Factory Collaboration
+
+`DefaultBeanFactory` must receive `BeanCreator` through constructor injection.
+
+Target constructor:
+
+```java
+public DefaultBeanFactory(
+        BeanRegistry beanRegistry,
+        BeanDefinitionRegistry beanDefinitionRegistry,
+        BeanCreator beanCreator
+) {
+    this.beanRegistry = beanRegistry;
+    this.beanDefinitionRegistry = beanDefinitionRegistry;
+    this.beanCreator = beanCreator;
+}
+```
+
+The factory must not instantiate `ReflectionBeanCreator` internally.
+
+---
+
+## Required Flow
 
 ```text
 getBean(beanName)
@@ -38,322 +114,201 @@ getBean(beanName)
 validate beanName
     ↓
 check BeanRegistry
-    ├── found     → return existing singleton
-    └── not found
+    ├── found → return singleton
+    └── missing
             ↓
       get BeanDefinition
             ↓
-      instantiate by no-argument constructor
+      BeanCreator.createBean(...)
             ↓
       register singleton
             ↓
-      return managed instance
+      return singleton
 ```
-
----
-
-## Goal
-
-Implement a minimal but complete `DefaultBeanFactory` that can:
-
-1. retrieve an existing singleton by bean name;
-2. create a missing bean from its registered `BeanDefinition`;
-3. cache the created instance in `BeanRegistry`;
-4. return the same managed instance for subsequent lookups;
-5. expose IoC-specific failures instead of reflection implementation details.
 
 ---
 
 ## Functional Requirements
 
-### 1. Collaborator wiring
+### 1. BeanCreator contract
 
-`DefaultBeanFactory` must receive these collaborators from outside:
+`BeanCreator` must expose one operation that creates a bean from:
 
-- `BeanDefinitionRegistry`
-- `BeanRegistry`
+- bean name;
+- `BeanDefinition`.
 
-The factory must not silently create private registry instances that registration code cannot access.
+The contract must not expose reflection-specific checked exceptions.
 
-Example target shape:
+### 2. ReflectionBeanCreator
 
-```java
-public DefaultBeanFactory(
-        BeanRegistry beanRegistry,
-        BeanDefinitionRegistry beanDefinitionRegistry
-) {
-    this.beanRegistry = beanRegistry;
-    this.beanDefinitionRegistry = beanDefinitionRegistry;
-}
-```
-
----
-
-### 2. Lookup by explicit bean name
-
-The public API for this ticket is:
-
-```java
-Object getBean(String beanName);
-```
-
-Required behavior:
-
-1. reject invalid input;
-2. return an existing registered singleton;
-3. retrieve the matching `BeanDefinition` when no instance exists;
-4. create the bean;
-5. register the created singleton;
-6. return it.
-
-The public API must not return `null` for unresolved beans.
-
----
-
-### 3. Bean creation
-
-IOC-004 supports only a no-argument constructor.
-
-Expected reflection flow:
+`ReflectionBeanCreator` must create beans using:
 
 ```java
 beanClass.getDeclaredConstructor().newInstance();
 ```
 
-Do not select a constructor through:
+It must not use:
 
 ```java
 getDeclaredConstructors()[0]
 ```
 
-Constructor selection and constructor injection belong to later tickets.
+### 3. Exception handling
 
----
-
-### 4. Singleton behavior
-
-Every bean is treated as a singleton in this ticket.
-
-Required behavior:
-
-- the first lookup creates the object;
-- the object is registered once;
-- later lookups return the same object reference.
-
-The primary assertion is:
-
-```java
-assertSame(firstLookup, secondLookup);
-```
-
----
-
-### 5. Bean-name validation
-
-The factory must reject:
-
-```text
-null
-""
-"   "
-```
-
-A suitable failure for invalid caller input is `IllegalArgumentException`, with a meaningful message.
-
-Example:
-
-```java
-if (beanName == null || beanName.isBlank()) {
-    throw new IllegalArgumentException(
-            "Bean name must not be null or blank"
-    );
-}
-```
-
----
-
-### 6. Exception boundary
-
-`BeanFactory` must not expose reflection-specific checked exceptions such as:
-
-- `NoSuchMethodException`
-- `InvocationTargetException`
-- `InstantiationException`
-- `IllegalAccessException`
-
-The interface should remain:
-
-```java
-Object getBean(String beanName);
-```
-
-Reflection failures must be wrapped in an IoC-domain exception such as:
+Reflection failures must be wrapped in:
 
 ```java
 BeanCreationException
 ```
 
-The exception must preserve:
+The exception must contain:
 
 - bean name;
-- bean class;
+- fully qualified bean class name;
 - original root cause.
 
-Example message:
+### 4. DefaultBeanFactory
 
-```text
-Failed to create bean 'userService' of type com.example.UserService
+`DefaultBeanFactory` must delegate object creation to `BeanCreator`.
+
+It must no longer contain:
+
+```java
+getDeclaredConstructor()
+newInstance()
+ReflectiveOperationException
 ```
 
-Missing definitions must produce a meaningful lookup exception, not a silent `null`.
+### 5. Behavior preservation
+
+All IOC-004 behavior must remain unchanged:
+
+- existing singleton lookup;
+- bean-name validation;
+- creation from `BeanDefinition`;
+- singleton registration;
+- repeated lookup returns the same instance;
+- meaningful missing-bean exception.
 
 ---
 
 ## Technical Constraints
 
-Do not implement the following in IOC-004:
+Do not implement:
 
-- `getBean(Class<T>)`
-- lookup by type;
-- multiple-candidate resolution;
-- `BeanCreator` abstraction;
-- `ConstructorResolver`;
-- `DependencyResolver`;
+- constructor selection;
+- parameterized constructors;
+- dependency resolution;
 - constructor injection;
+- lookup by type;
 - prototype scope;
 - circular-dependency detection;
-- bean lifecycle callbacks;
-- `BeanPostProcessor`;
-- component scanning;
-- annotation processing;
-- `ApplicationContext`.
+- annotation scanning;
+- lifecycle callbacks.
 
-Unused future abstractions should not participate in the IOC-004 execution flow.
+`BeanCreator` creates only beans with a no-argument constructor.
 
 ---
 
 ## Required Tests
 
-Create focused tests for `DefaultBeanFactory`.
+### ReflectionBeanCreatorTest
 
-Recommended file:
+Add focused tests:
 
-```text
-src/test/java/.../factory/DefaultBeanFactoryTest.java
-```
+1. `shouldCreateBeanUsingDefaultConstructor`
+2. `shouldWrapFailureWhenDefaultConstructorDoesNotExist`
+3. `shouldIncludeBeanNameInCreationException`
+4. `shouldIncludeBeanTypeInCreationException`
+5. `shouldPreserveOriginalCause`
 
-Required test cases:
+### DefaultBeanFactoryTest
 
-1. `shouldReturnExistingBeanFromRegistry`
-2. `shouldCreateBeanFromDefinition`
-3. `shouldRegisterCreatedBean`
-4. `shouldReturnSameSingletonOnRepeatedLookup`
-5. `shouldThrowWhenBeanDefinitionDoesNotExist`
-6. `shouldRejectNullBeanName`
-7. `shouldRejectBlankBeanName`
-8. `shouldWrapCreationFailureWhenDefaultConstructorDoesNotExist`
+Update existing tests so the factory receives a `BeanCreator`.
 
-A generated test such as `assertTrue(true)` does not count as ticket coverage.
+Existing IOC-004 tests must continue to pass.
+
+At least one factory test should confirm that the bean created by `BeanCreator` is registered and reused as a singleton.
 
 ---
 
 ## Acceptance Criteria
 
-### Factory design
+### BeanCreator
 
-- [x] `DefaultBeanFactory` coordinates `BeanRegistry` and `BeanDefinitionRegistry`.
-- [x] Registry collaborators are supplied through the constructor.
-- [ ] `DefaultBeanFactory` contains no unused dependency-resolution field or flow.
-- [ ] The public `BeanFactory` API exposes no reflection-specific checked exceptions.
+- [ ] `BeanCreator` interface exists.
+- [ ] `ReflectionBeanCreator` implements `BeanCreator`.
+- [ ] Bean creation uses the no-argument constructor.
+- [ ] Reflection-specific checked exceptions do not leak.
+- [ ] Creation failures are wrapped in `BeanCreationException`.
+- [ ] Exception message contains bean name and bean type.
+- [ ] Original root cause is preserved.
 
-### Lookup behavior
+### DefaultBeanFactory
 
-- [x] Lookup is supported by explicit bean name.
-- [x] An existing singleton is returned from `BeanRegistry`.
-- [x] A missing instance is created from its `BeanDefinition`.
-- [x] A created bean is registered in `BeanRegistry`.
-- [ ] Repeated lookup is verified to return the same object reference.
-- [ ] Missing bean definitions fail with a meaningful exception.
-- [ ] Lookup never silently returns `null`.
+- [ ] `BeanCreator` is supplied through constructor injection.
+- [ ] `DefaultBeanFactory` delegates bean creation to `BeanCreator`.
+- [ ] `DefaultBeanFactory` contains no direct reflection code.
+- [ ] Singleton registration remains the responsibility of `DefaultBeanFactory`.
+- [ ] Existing IOC-004 behavior remains unchanged.
 
-### Input and failure handling
+### Testing
 
-- [ ] Null bean names are rejected.
-- [ ] Empty bean names are rejected.
-- [ ] Blank bean names are rejected.
-- [ ] Bean-creation failures are wrapped in `BeanCreationException`.
-- [ ] `BeanCreationException` preserves the original cause.
-- [ ] Exception messages include useful bean context.
-
-### Testing and verification
-
-- [ ] `DefaultBeanFactory` behavior is covered by focused unit tests.
-- [ ] Positive singleton paths are covered.
-- [ ] Negative and reflection-failure paths are covered.
+- [ ] `ReflectionBeanCreator` has focused unit tests.
+- [ ] Existing `DefaultBeanFactoryTest` tests still pass.
+- [ ] Positive creation behavior is covered.
+- [ ] Reflection-failure behavior is covered.
 - [ ] `mvn clean test` passes.
-- [ ] No generated build output is committed.
 
 ---
 
-## Suggested Completion Order
+## Suggested Implementation Order
 
-1. Remove unused or future-ticket logic from `DefaultBeanFactory`.
-2. Ensure `BeanFactory#getBean(String)` exposes no checked reflection exceptions.
-3. Add bean-name validation.
-4. Implement meaningful `BeanNotFoundException` behavior.
-5. Implement `BeanCreationException` with message and cause.
-6. Wrap reflection failures inside `DefaultBeanFactory`.
-7. Add behavior-focused unit tests.
-8. Run `mvn clean test`.
-9. Check the completed acceptance criteria.
-10. Request final review before merge.
+1. Create the `BeanCreator` interface.
+2. Implement `ReflectionBeanCreator`.
+3. Move reflection and exception wrapping out of `DefaultBeanFactory`.
+4. Inject `BeanCreator` into `DefaultBeanFactory`.
+5. Update existing factory tests.
+6. Add focused tests for `ReflectionBeanCreator`.
+7. Run the entire test suite.
+8. Refactor only after all tests pass.
 
 ---
 
 ## Definition of Done
 
-IOC-004 is complete only when:
+IOC-005 is complete when:
 
-- all required behavior is implemented;
-- all acceptance criteria are checked;
-- the factory API hides reflection internals;
-- no constructor injection or dependency-resolution behavior is included;
-- all unit tests pass;
-- the Pull Request description accurately reflects the code;
+- bean creation is fully delegated to `BeanCreator`;
+- `DefaultBeanFactory` contains no reflection code;
+- IOC-004 behavior remains unchanged;
+- all new and existing tests pass;
+- no constructor injection or dependency-resolution logic is introduced;
 - final review status is `APPROVED`.
+
+---
+
+## Out of Scope
+
+The following belong to future tickets:
+
+- constructor selection;
+- constructor dependency resolution;
+- lookup by type;
+- qualifiers;
+- prototype scope;
+- circular-dependency detection;
+- annotation processing;
+- bean lifecycle.
 
 ---
 
 ## Expected Learning Outcomes
 
-After IOC-004, the developer should be able to explain:
+After completing IOC-005, you should be able to explain:
 
-1. Why `BeanDefinitionRegistry` and `BeanRegistry` store different things.
-2. Why `BeanFactory` coordinates the flow instead of replacing the registries.
-3. Why a managed singleton must be cached after creation.
-4. Why framework APIs should hide raw reflection exceptions.
-5. Why returning `null` hides container configuration errors.
-6. Why dependency resolution should be introduced only after basic retrieval is stable.
-
----
-
-## Review Result
-
-Current result:
-
-```text
-CHANGES_REQUESTED
-```
-
-The core orchestration direction is correct. Before merge, the ticket still requires verified input validation, domain exception handling, removal of reflection exceptions from the public API, and focused unit tests.
-
----
-
-## Next Review Input
-
-For final review, provide:
-
-- the latest commit hash;
-- output of `mvn clean test`;
-- updated PR acceptance-criteria checkboxes;
-- source archive or patch if GitHub does not expose the latest commit contents.
+1. The difference between bean orchestration and bean instantiation.
+2. Why `BeanFactory` should not directly depend on reflection details.
+3. How dependency inversion makes the factory easier to test and extend.
+4. Why `BeanCreator` must not manage singleton caching.
+5. Why extracting an abstraction is safer after the original behavior is covered by tests.
